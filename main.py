@@ -22,8 +22,12 @@ def main():
     # Create subdirectories for different types of output
     csv_dir = output_dir / "csv_files"
     image_dir = output_dir / "processed_images"
+    plot_dir = output_dir / "distribution_plots"
+    
+    # Create all directories
     csv_dir.mkdir(exist_ok=True)
     image_dir.mkdir(exist_ok=True)
+    plot_dir.mkdir(exist_ok=True)
     
     # Process all images in input directory
     valid_extensions = {'.jpg', '.jpeg', '.png', '.tif', '.tiff'}
@@ -31,32 +35,58 @@ def main():
     for image_path in input_dir.iterdir():
         if image_path.suffix.lower() in valid_extensions:
             try:
-                process_single_image(image_path, csv_dir, image_dir)
+                process_single_image(image_path, csv_dir, image_dir, plot_dir)
                 print(f"Successfully processed {image_path.name}")
             except Exception as e:
                 print(f"Error processing {image_path.name}: {str(e)}")
 
-def process_single_image(image_path, csv_dir, image_dir):
+def create_size_distribution_plots(areas, perimeters, output_path, image_name):
+    """
+    Create and save histograms for grain size distribution.
+    
+    """
+    # Create figure with two subplots
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+    
+    # Plot area distribution
+    ax1.hist(areas, bins='auto', color='blue', alpha=0.7)
+    ax1.set_title(f'Grain Area Distribution - {image_name}')
+    ax1.set_xlabel('Area (µm²)')
+    ax1.set_ylabel('Frequency')
+    ax1.grid(True, alpha=0.3)
+    
+    # Plot perimeter distribution
+    ax2.hist(perimeters, bins='auto', color='green', alpha=0.7)
+    ax2.set_title(f'Grain Perimeter Distribution - {image_name}')
+    ax2.set_xlabel('Perimeter (µm)')
+    ax2.set_ylabel('Frequency')
+    ax2.grid(True, alpha=0.3)
+    
+    # Adjust layout and save
+    plt.tight_layout()
+    plt.savefig(output_path / f"{Path(image_name).stem}_distributions.png", dpi=300, bbox_inches='tight')
+    plt.close()
+
+def process_single_image(image_path, csv_dir, image_dir, plot_dir):
     """
     Process a single image and save its results.
     
-    Args:
-        image_path: Path to the input image
-        csv_dir: Directory to save CSV files
-        image_dir: Directory to save processed images
     """
     # Read image
     image = cv2.imread(str(image_path))
     if image is None:
         raise ValueError("Could not read the image file")
     
+    height, _, _ = image.shape
+    cropped_img = image[:height - 80, :, :]
+
     # Process image
-    gray, thresh = preprocess_image(image)
-    markers, segmented_image = perform_watershed_segmentation(image, thresh)
+    gray, thresh = preprocess_image(cropped_img)
+    markers, segmented_image = perform_watershed_segmentation(cropped_img, thresh)
     
     # Calculate and save grain properties
     csv_filename = csv_dir / f"{image_path.stem}_measurements.csv"
-    stats = calculate_grain_properties(markers, gray, csv_filename)
+    stats = calculate_grain_properties(markers, gray, csv_filename, plot_dir, image_path.name)
     
     # Print statistics
     print(f"\nResults for {image_path.name}:")
@@ -77,10 +107,6 @@ def preprocess_image(image):
     """
     Preprocess the input image for grain analysis.
     
-    Args:
-        image: Input BGR image
-    Returns:
-        Preprocessed grayscale image and original image
     """
     # Convert to grayscale
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -93,12 +119,6 @@ def preprocess_image(image):
 def perform_watershed_segmentation(image, thresh):
     """
     Perform watershed segmentation on the image.
-    
-    Args:
-        image: Original image
-        thresh: Thresholded image
-    Returns:
-        Markers and segmented image
     """
     # Define kernel for morphological operations
     kernel = np.ones((3,3), np.uint8)
@@ -132,7 +152,7 @@ def perform_watershed_segmentation(image, thresh):
     
     return markers, image_copy
 
-def calculate_grain_properties(markers, intensity_image, output_path, pixels_to_um=0.5):
+def calculate_grain_properties(markers, intensity_image, output_path, plot_dir, image_name, pixels_to_um=0.5):
     """
     Calculate and save grain properties to CSV file, including additional statistics.
     
@@ -140,6 +160,8 @@ def calculate_grain_properties(markers, intensity_image, output_path, pixels_to_
         markers: Image markers from watershed
         intensity_image: Original grayscale image
         output_path: Path to save the CSV file
+        plot_dir: Directory to save distribution plots
+        image_name: Name of the original image
         pixels_to_um: Conversion factor from pixels to micrometers
     
     Returns:
@@ -163,6 +185,13 @@ def calculate_grain_properties(markers, intensity_image, output_path, pixels_to_
     
     # Remove the background (largest) region
     grain_regions = sorted_regions[1:]
+    
+    # Collect areas and perimeters for plotting
+    areas = [region.area * (pixels_to_um ** 2) for region in grain_regions]
+    perimeters = [region.perimeter * pixels_to_um for region in grain_regions]
+    
+    # Create and save distribution plots
+    create_size_distribution_plots(areas, perimeters, plot_dir, image_name)
     
     # Calculate basic statistics
     total_particles = len(grain_regions)
@@ -191,6 +220,16 @@ def calculate_grain_properties(markers, intensity_image, output_path, pixels_to_
         output_file.write(f"Total grain area (µm²):,{total_grain_area_um2:.2f}\n")
         output_file.write(f"Mean grain area (µm²):,{mean_grain_area_um2:.2f}\n")
         output_file.write(f"Particle density (particles/µm²):,{particle_density:.6f}\n")
+        
+        # Add distribution statistics
+        output_file.write("\nSize Distribution Statistics\n")
+        output_file.write(f"Mean area (µm²):,{np.mean(areas):.2f}\n")
+        output_file.write(f"Median area (µm²):,{np.median(areas):.2f}\n")
+        output_file.write(f"Standard deviation of area (µm²):,{np.std(areas):.2f}\n")
+        output_file.write(f"Mean perimeter (µm):,{np.mean(perimeters):.2f}\n")
+        output_file.write(f"Median perimeter (µm):,{np.median(perimeters):.2f}\n")
+        output_file.write(f"Standard deviation of perimeter (µm):,{np.std(perimeters):.2f}\n")
+        
         output_file.write("\nIndividual Grain Measurements\n")
         
         # Write header for individual measurements
@@ -209,6 +248,8 @@ def calculate_grain_properties(markers, intensity_image, output_path, pixels_to_
                     value = value * (pixels_to_um ** 2)
                 elif prop == 'orientation':
                     value = value * 57.2958  # Convert radians to degrees
+                elif prop == 'Perimeter':
+                    value = value * pixels_to_um
                 
                 # Round to 2 decimal places
                 value = round(value, 2)
